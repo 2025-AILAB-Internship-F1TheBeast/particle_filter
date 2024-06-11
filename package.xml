@@ -2,11 +2,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>particle_filter</name>
-  <version>0.2.0</version>
-  <description>Particle Filter Localization using RangeLibc for accelerated ray casting.</description>
-  <!-- Original Author -->
-  <maintainer email="coreyhwalsh@gmail.com">Corey Walsh</maintainer>
-  <!-- ROS2 Author, maintainer -->
+  <version>0.1.0</version>
+  <description>Monte Carlo Localization in JAX</description>
   <maintainer email="billyzheng.bz@gmail.com">Hongrui Zheng</maintainer>
   <license>MIT</license>
 

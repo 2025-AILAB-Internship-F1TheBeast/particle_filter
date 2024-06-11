@@ -137,7 +137,7 @@ def map_to_world_slow(x, y, t, map_info):
 
 def map_to_world(poses, map_info):
     """Takes a two dimensional numpy array of poses:
-        [[x0,y0,theta0],
+        [[c0,r0,theta0],
          [x1,y1,theta1],
          [x2,y2,theta2],
                ...     ]

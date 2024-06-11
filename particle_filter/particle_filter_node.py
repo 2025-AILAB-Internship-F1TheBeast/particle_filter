@@ -1,6 +1,6 @@
 # MIT License
 
-# Copyright (c) 2020 Hongrui Zheng
+# Copyright (c) 2024 Hongrui Zheng
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the 'Software'), to deal
@@ -28,16 +28,22 @@ ROS 2 Node of Particle Filter with 2D Laserscan
 import rclpy
 from rclpy.node import Node
 
-# libraries
 import numpy as np
-import range_libc
-import time
-from threading import Lock
-from particle_filter import utils as Utils
+import jax
+import jax.numpy as jnp
+
+# jax PF
+from jax_pf.mcl import (
+    compute_sensor_model,
+    motion_update,
+    sensor_update,
+    mcl_init,
+    mcl_init_with_pose,
+    mcl_update,
+)
+
 
 # TF
-# import tf.transformations
-# import tf
 from tf2_ros import TransformBroadcaster
 import tf_transformations
 
@@ -61,15 +67,6 @@ from geometry_msgs.msg import (
 from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
 
-"""
-These flags indicate several variants of the sensor model. Only one of them is used at a time.
-"""
-VAR_NO_EVAL_SENSOR_MODEL = 0
-VAR_CALC_RANGE_MANY_EVAL_SENSOR = 1
-VAR_REPEAT_ANGLES_EVAL_SENSOR = 2
-VAR_REPEAT_ANGLES_EVAL_SENSOR_ONE_SHOT = 3
-VAR_RADIAL_CDDT_OPTIMIZATIONS = 4
-
 
 class ParticleFiler(Node):
     """
@@ -82,20 +79,17 @@ class ParticleFiler(Node):
         # declare parameters
         self.declare_parameter("angle_step")
         self.declare_parameter("max_particles")
-        self.declare_parameter("max_viz_particles")
-        self.declare_parameter("squash_factor")
         self.declare_parameter("max_range")
         self.declare_parameter("theta_discretization")
-        self.declare_parameter("range_method")
-        self.declare_parameter("rangelib_variant")
-        self.declare_parameter("fine_timing")
-        self.declare_parameter("publish_odom")
+        # self.declare_parameter("publish_odom")
+        # self.declare_parameter("publish_fake_scan")
         self.declare_parameter("viz")
         self.declare_parameter("z_short")
         self.declare_parameter("z_max")
         self.declare_parameter("z_rand")
         self.declare_parameter("z_hit")
         self.declare_parameter("sigma_hit")
+        self.declare_parameter("lambda_short")
         self.declare_parameter("motion_dispersion_x")
         self.declare_parameter("motion_dispersion_y")
         self.declare_parameter("motion_dispersion_theta")
@@ -105,13 +99,8 @@ class ParticleFiler(Node):
         # parameters
         self.ANGLE_STEP = self.get_parameter("angle_step").value
         self.MAX_PARTICLES = self.get_parameter("max_particles").value
-        self.MAX_VIZ_PARTICLES = self.get_parameter("max_viz_particles").value
-        self.INV_SQUASH_FACTOR = 1.0 / self.get_parameter("squash_factor").value
         self.MAX_RANGE_METERS = self.get_parameter("max_range").value
         self.THETA_DISCRETIZATION = self.get_parameter("theta_discretization").value
-        self.WHICH_RM = self.get_parameter("range_method").value
-        self.RANGELIB_VAR = self.get_parameter("rangelib_variant").value
-        self.SHOW_FINE_TIMING = self.get_parameter("fine_timing").value
         self.PUBLISH_ODOM = self.get_parameter("publish_odom").value
         self.DO_VIZ = self.get_parameter("viz").value
 
@@ -121,6 +110,7 @@ class ParticleFiler(Node):
         self.Z_RAND = self.get_parameter("z_rand").value
         self.Z_HIT = self.get_parameter("z_hit").value
         self.SIGMA_HIT = self.get_parameter("sigma_hit").value
+        self.LAMBDA_SHORT = self.get_parameter("lambda_short").value
 
         # motion model constants
         self.MOTION_DISPERSION_X = self.get_parameter("motion_dispersion_x").value
@@ -145,7 +135,6 @@ class ParticleFiler(Node):
         self.last_time = None
         self.last_stamp = None
         self.first_sensor_update = True
-        self.state_lock = Lock()
 
         # cache this to avoid memory allocation in motion model
         self.local_deltas = np.zeros((self.MAX_PARTICLES, 3))
