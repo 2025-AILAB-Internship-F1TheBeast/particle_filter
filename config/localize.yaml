@@ -1,5 +1,9 @@
 particle_filter:
   ros__parameters:
+    # seeding
+    seed: 123
+    # car wheelbase
+    lwb: 0.32
     # topic names
     scan_topic: '/scan'
     odometry_topic: '/odom'
@@ -7,15 +11,13 @@ particle_filter:
     update_on_scan: True
     # range data downsampling
     angle_step: 18
-    max_particles: 4000
-    # visualization
-    viz: True
+    num_particles: 4000
     # ray marching
     theta_discretization: 112
+    # ray marching stopping threshold
+    eps: 0.001
     # range data filtering
     max_range: 10
-    publish_odom: True
-    publish_fake_scan: False
     # sensor model constants
     z_short: 0.01
     z_max: 0.07

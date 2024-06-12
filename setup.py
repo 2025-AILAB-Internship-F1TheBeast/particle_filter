@@ -6,7 +6,7 @@ package_name = 'particle_filter'
 
 setup(
     name=package_name,
-    version='0.2.0',
+    version='0.3.0',
     packages=[package_name],
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -20,7 +20,7 @@ setup(
     zip_safe=True,
     maintainer='Hongrui Zheng',
     maintainer_email='billyzheng.bz@gmail.com',
-    description='Particle Filter Localization using RangeLibc for accelerated ray casting.',
+    description='Particle Filter Localization using JAX for accelerated ray marching.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
