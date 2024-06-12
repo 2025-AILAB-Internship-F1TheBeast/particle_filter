@@ -31,6 +31,7 @@ from rclpy.node import Node
 import numpy as np
 import jax
 import jax.numpy as jnp
+from scipy.ndimage import distance_transform_edt
 
 # jax PF
 from jax_pf.mcl import (
@@ -95,8 +96,10 @@ class ParticleFiler(Node):
         self.declare_parameter("motion_dispersion_theta")
         self.declare_parameter("scan_topic")
         self.declare_parameter("odometry_topic")
+        self.declare_parameter("update_on_scan")
 
         # parameters
+        self.UPDAT_ON_SCAN = self.get_parameter("update_on_scan").value
         self.ANGLE_STEP = self.get_parameter("angle_step").value
         self.MAX_PARTICLES = self.get_parameter("max_particles").value
         self.MAX_RANGE_METERS = self.get_parameter("max_range").value
@@ -121,9 +124,8 @@ class ParticleFiler(Node):
 
         # various data containers used in the MCL algorithm
         self.MAX_RANGE_PX = None
-        self.odometry_data = np.array([0.0, 0.0, 0.0])
+        self.odometry_data = jnp.array([0.0, 0.0, 0.0])
         self.laser = None
-        self.iters = 0
         self.map_info = None
         self.map_initialized = False
         self.lidar_initialized = False
@@ -131,13 +133,12 @@ class ParticleFiler(Node):
         self.last_pose = None
         self.laser_angles = None
         self.downsampled_angles = None
-        self.range_method = None
         self.last_time = None
         self.last_stamp = None
         self.first_sensor_update = True
 
         # cache this to avoid memory allocation in motion model
-        self.local_deltas = np.zeros((self.MAX_PARTICLES, 3))
+        self.local_deltas = jnp.zeros((self.MAX_PARTICLES, 3))
 
         # cache this for the sensor model computation
         self.queries = None
@@ -146,14 +147,11 @@ class ParticleFiler(Node):
         self.sensor_model_table = None
 
         # particle poses and weights
-        self.inferred_pose = None
-        self.particle_indices = np.arange(self.MAX_PARTICLES)
-        self.particles = np.zeros((self.MAX_PARTICLES, 3))
-        self.weights = np.ones(self.MAX_PARTICLES) / float(self.MAX_PARTICLES)
+        self.current_estimate = None
+        # self.particle_indices = jnp.arange(self.MAX_PARTICLES)
+        self.particles = jnp.zeros((self.MAX_PARTICLES, 3))
+        self.weights = jnp.ones(self.MAX_PARTICLES) / self.MAX_PARTICLES
 
-        # initialize the state
-        self.smoothing = Utils.CircularArray(10)
-        self.timer = Utils.Timer(10)
         # map service client
         self.map_client = self.create_client(GetMap, "/map_server/map")
         self.get_omap()
@@ -168,7 +166,6 @@ class ParticleFiler(Node):
         self.pose_pub = self.create_publisher(PoseStamped, "/pf/viz/inferred_pose", 1)
         self.particle_pub = self.create_publisher(PoseArray, "/pf/viz/particles", 1)
         self.pub_fake_scan = self.create_publisher(LaserScan, "/pf/viz/fake_scan", 1)
-        self.rect_pub = self.create_publisher(PolygonStamped, "/pf/viz/poly1", 1)
 
         if self.PUBLISH_ODOM:
             self.odom_pub = self.create_publisher(Odometry, "/pf/pose/odom", 1)
@@ -178,7 +175,7 @@ class ParticleFiler(Node):
 
         # these topics are to receive data from the racecar
         self.laser_sub = self.create_subscription(
-            LaserScan, self.get_parameter("scan_topic").value, self.lidarCB, 1
+            LaserScan, self.get_parameter("scan_topic").value, self.lidar_callback, 1
         )
         self.odom_sub = self.create_subscription(
             Odometry, self.get_parameter("odometry_topic").value, self.odomCB, 1
@@ -192,10 +189,70 @@ class ParticleFiler(Node):
 
         self.get_logger().info("Finished initializing, waiting on messages...")
 
+    def lidar_callback(self, msg):
+        """
+        Initialize (if necessary) and store laserscans.
+        """
+        if self.laser_angles is None:
+            self.get_logger().info("----- Received first LiDAR message -----")
+            self.laser_angles = jnp.linspace(
+                msg.angle_min, msg.angle_max, len(msg.ranges)
+            )
+            self.downsampled_angles = jnp.copy(self.laser_angles[::self.ANGLE_STEP])
+            self.viz_queries = jnp.zeros((self.downsampled_angles.shape[0], 3))
+            self.viz_ranges = jnp.zeros(self.downsampled_angles.shape[0])
+
+        # store the necessary scanner information for later processing
+        self.downsampled_ranges = jnp.array(msg.ranges[::self.ANGLE_STEP])
+        self.lidar_initialized = True
+
+        if self.UPDATE_ON_SCAN:
+            self.update()
+
+    def odomCB(self, msg):
+        """
+        Store deltas between consecutive odometry messages in the coordinate space of the car.
+
+        Odometry data is accumulated via dead reckoning, so it is very inaccurate on its own.
+        """
+        position = jnp.array([msg.pose.pose.position.x, msg.pose.pose.position.y])
+
+        # orientation = Utils.quaternion_to_angle(msg.pose.pose.orientation)
+        orientation = tf_transformations.euler_from_quaternion(msg.pose.pose.orientation)
+        pose = np.array([position[0], position[1], orientation])
+        self.current_speed = msg.twist.twist.linear.x
+
+        if self.last_pose is None:
+            # changes in x,y,theta in local coordinate system of the car
+            rot = Utils.rotation_matrix(-self.last_pose[2])
+            delta = np.array([position - self.last_pose[0:2]]).transpose()
+            local_delta = (rot * delta).transpose()
+
+            self.odometry_data = np.array(
+                [local_delta[0, 0], local_delta[0, 1], orientation - self.last_pose[2]]
+            )
+            self.last_pose = pose
+            self.last_stamp = msg.header.stamp
+            self.odom_initialized = True
+        else:
+            self.get_logger().info("...Received first Odometry message")
+            self.last_pose = pose
+
+        if not self.UPDATE_ON_SCAN:
+            self.update()
+
+    def clicked_pose(self, msg):
+        """
+        Receive pose messages from RViz and initialize the particle distribution in response.
+        """
+        if isinstance(msg, PointStamped):
+            self.initialize_global()
+        elif isinstance(msg, PoseWithCovarianceStamped):
+            self.initialize_particles_pose(msg.pose.pose)
+
     def get_omap(self):
         """
-        Fetch the occupancy grid map from the map_server instance, and initialize the correct
-        RangeLibc method. Also stores a matrix which indicates the permissible region of the map
+        Fetch the occupancy grid map from the map_server instance, and create the distance transform.
         """
 
         while not self.map_client.wait_for_service(timeout_sec=1.0):
@@ -206,38 +263,19 @@ class ParticleFiler(Node):
         map_msg = future.result().map
         self.map_info = map_msg.info
 
-        oMap = range_libc.PyOMap(map_msg)
-        self.MAX_RANGE_PX = int(self.MAX_RANGE_METERS / self.map_info.resolution)
-
-        # initialize range method
-        self.get_logger().info("Initializing range method: " + self.WHICH_RM)
-        if self.WHICH_RM == "bl":
-            self.range_method = range_libc.PyBresenhamsLine(oMap, self.MAX_RANGE_PX)
-        elif "cddt" in self.WHICH_RM:
-            self.range_method = range_libc.PyCDDTCast(
-                oMap, self.MAX_RANGE_PX, self.THETA_DISCRETIZATION
-            )
-            if self.WHICH_RM == "pcddt":
-                self.get_logger().info("Pruning...")
-                self.range_method.prune()
-        elif self.WHICH_RM == "rm":
-            self.range_method = range_libc.PyRayMarching(oMap, self.MAX_RANGE_PX)
-        elif self.WHICH_RM == "rmgpu":
-            self.range_method = range_libc.PyRayMarchingGPU(oMap, self.MAX_RANGE_PX)
-        elif self.WHICH_RM == "glt":
-            self.range_method = range_libc.PyGiantLUTCast(
-                oMap, self.MAX_RANGE_PX, self.THETA_DISCRETIZATION
-            )
-        self.get_logger().info("Done loading map")
-
-        # 0: permissible, -1: unmapped, 100: blocked
-        array_255 = np.array(map_msg.data).reshape(
-            (map_msg.info.height, map_msg.info.width)
+        self.height = self.map_info.height
+        self.width = self.map_info.width
+        self.resolution = self.map_info.resolution
+        self.orig_x = self.map_info.origin.position.x
+        self.orig_y = self.map_info.origin.position.y
+        self.orig_q = self.map_info.origin.orientation
+        self.orig_t = tf_transformations.euler_from_quaternion(
+            [self.orig_q.x, self.orig_q.y, self.orig_q.z, self.orig_q.w]
         )
 
-        # 0: not permissible, 1: permissible
-        self.permissible_region = np.zeros_like(array_255, dtype=bool)
-        self.permissible_region[array_255 == 0] = 1
+        self.omap = np.array(map_msg.data).reshape((self.height, self.width))
+        self.dt = self.resolution * distance_transform_edt(self.omap)
+
         self.map_initialized = True
 
     def publish_tf(self, pose, stamp=None):
@@ -339,71 +377,6 @@ class ParticleFiler(Node):
         ls.range_max = np.max(ranges)
         ls.ranges = ranges
         self.pub_fake_scan.publish(ls)
-
-    def lidarCB(self, msg):
-        """
-        Initializes reused buffers, and stores the relevant laser scanner data for later use.
-        """
-        if not isinstance(self.laser_angles, np.ndarray):
-            self.get_logger().info("...Received first LiDAR message")
-            self.laser_angles = np.linspace(
-                msg.angle_min, msg.angle_max, len(msg.ranges)
-            )
-            self.downsampled_angles = np.copy(
-                self.laser_angles[0 :: self.ANGLE_STEP]
-            ).astype(np.float32)
-            self.viz_queries = np.zeros(
-                (self.downsampled_angles.shape[0], 3), dtype=np.float32
-            )
-            self.viz_ranges = np.zeros(
-                self.downsampled_angles.shape[0], dtype=np.float32
-            )
-            self.get_logger().info(str(self.downsampled_angles.shape[0]))
-
-        # store the necessary scanner information for later processing
-        self.downsampled_ranges = np.array(msg.ranges[:: self.ANGLE_STEP])
-        self.lidar_initialized = True
-        # self.update()
-
-    def odomCB(self, msg):
-        """
-        Store deltas between consecutive odometry messages in the coordinate space of the car.
-
-        Odometry data is accumulated via dead reckoning, so it is very inaccurate on its own.
-        """
-        position = np.array([msg.pose.pose.position.x, msg.pose.pose.position.y])
-
-        orientation = Utils.quaternion_to_angle(msg.pose.pose.orientation)
-        pose = np.array([position[0], position[1], orientation])
-        self.current_speed = msg.twist.twist.linear.x
-
-        if isinstance(self.last_pose, np.ndarray):
-            # changes in x,y,theta in local coordinate system of the car
-            rot = Utils.rotation_matrix(-self.last_pose[2])
-            delta = np.array([position - self.last_pose[0:2]]).transpose()
-            local_delta = (rot * delta).transpose()
-
-            self.odometry_data = np.array(
-                [local_delta[0, 0], local_delta[0, 1], orientation - self.last_pose[2]]
-            )
-            self.last_pose = pose
-            self.last_stamp = msg.header.stamp
-            self.odom_initialized = True
-        else:
-            self.get_logger().info("...Received first Odometry message")
-            self.last_pose = pose
-
-        # this topic is slower than lidar, so update every time we receive a message
-        self.update()
-
-    def clicked_pose(self, msg):
-        """
-        Receive pose messages from RViz and initialize the particle distribution in response.
-        """
-        if isinstance(msg, PointStamped):
-            self.initialize_global()
-        elif isinstance(msg, PoseWithCovarianceStamped):
-            self.initialize_particles_pose(msg.pose.pose)
 
     def initialize_particles_pose(self, pose):
         """

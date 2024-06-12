@@ -3,17 +3,19 @@ particle_filter:
     # topic names
     scan_topic: '/scan'
     odometry_topic: '/odom'
+    # if update is called in scan callback
+    update_on_scan: True
     # range data downsampling
     angle_step: 18
     max_particles: 4000
     # visualization
-    viz: 1
+    viz: True
     # ray marching
     theta_discretization: 112
     # range data filtering
     max_range: 10
-    publish_odom: 1
-    publish_fake_scan: 0
+    publish_odom: True
+    publish_fake_scan: False
     # sensor model constants
     z_short: 0.01
     z_max: 0.07
