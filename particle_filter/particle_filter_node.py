@@ -47,6 +47,7 @@ from geometry_msgs.msg import (
 from nav_msgs.srv import GetMap
 
 # jax, numpy, and scipy
+import os
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -62,6 +63,7 @@ from jax_pf.mcl import (
 )
 from jax_pf.ray_marching import get_scan
 
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 class ParticleFilter(Node):
     def __init__(self):
@@ -74,7 +76,7 @@ class ParticleFilter(Node):
         self.declare_parameter("update_on_scan", rclpy.Parameter.Type.BOOL)
         self.declare_parameter("angle_step", rclpy.Parameter.Type.INTEGER)
         self.declare_parameter("num_particles", rclpy.Parameter.Type.INTEGER)
-        self.declare_parameter("theta_discretization", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("theta_discretization", rclpy.Parameter.Type.INTEGER)
         self.declare_parameter("eps", rclpy.Parameter.Type.DOUBLE)
         self.declare_parameter("max_range", rclpy.Parameter.Type.DOUBLE)
         self.declare_parameter("z_short", rclpy.Parameter.Type.DOUBLE)
@@ -116,9 +118,6 @@ class ParticleFilter(Node):
         # rng
         self.rng = jax.random.PRNGKey(self.seed)
         # data containers
-        self.map_initialized = False
-        self.lidar_initialized = False
-        self.odom_initialized = False
         self.orig_x = None
         self.orig_y = None
         self.orig_t = None
@@ -135,6 +134,7 @@ class ParticleFilter(Node):
         self.downsampled_scan = None
         self.downsampled_theta = None
         self.last_pose = None
+        self.action = None
 
         # get occupancy map
         self.map_client = self.create_client(GetMap, "/map_server/map")
@@ -169,7 +169,7 @@ class ParticleFilter(Node):
             # first call
             self.get_logger().info("Received first LaserScan message...")
             scan = msg.ranges
-            self.downsampled_scan = scan[:: self.angle_step]
+            self.downsampled_scan = jnp.array(scan[:: self.angle_step])
             self.theta_min = msg.angle_min
             self.theta_max = msg.angle_max
             self.fov = self.theta_max - self.theta_min
@@ -185,7 +185,7 @@ class ParticleFilter(Node):
             self.cosines = jnp.cos(theta_arr)
             self.num_beams = len(self.downsampled_scan)
         else:
-            self.downsampled_scan = msg.ranges[:: self.angle_step]
+            self.downsampled_scan = jnp.array(msg.ranges[:: self.angle_step])
 
         if self.update_on_scan:
             self.mcl_update()
@@ -202,13 +202,12 @@ class ParticleFilter(Node):
         else:
             # calculate changes in states
             rot = tf_transformations.rotation_matrix(-self.last_pose[2], [0, 0, 1])
-            delta = jnp.array([pose[:2] - self.last_pose[:2]])[:, None].T
-            local_delta = jnp.dot(rot, delta)
+            delta = jnp.array([pose[:2] - self.last_pose[:2]]).T
+            local_delta = jnp.dot(rot[:2, :2], delta)
             self.action = jnp.array(
-                [local_delta[0], local_delta[1], theta - self.last_pose[2]]
+                [local_delta[0][0], local_delta[1][0], theta - self.last_pose[2]]
             )
             self.last_pose = pose
-            self.odom_initialized = True
 
         if not self.update_on_scan:
             self.mcl_update()
@@ -225,8 +224,8 @@ class ParticleFilter(Node):
         p = PoseStamped()
         p.header.stamp = stamp
         p.header.frame_id = "map"
-        p.pose.position.x = self.current_estimate[0]
-        p.pose.position.y = self.current_estimate[1]
+        p.pose.position.x = float(self.current_estimate[0])
+        p.pose.position.y = float(self.current_estimate[1])
         q = tf_transformations.quaternion_about_axis(
             self.current_estimate[2], [0, 0, 1]
         )
@@ -236,16 +235,16 @@ class ParticleFilter(Node):
         p.pose.orientation.w = q[3]
         self.pose_pub.publish(p)
 
-    def publish_tf(self, pose: Array):
+    def publish_tf(self):
         stamp = self.get_clock().now().to_msg()
         t = TransformStamped()
         t.header.stamp = stamp
         t.header.frame_id = "map"
         t.child_frame_id = "laser"
-        t.transform.translation.x = pose[0]
-        t.transform.translation.y = pose[1]
+        t.transform.translation.x = float(self.current_estimate[0])
+        t.transform.translation.y = float(self.current_estimate[1])
         t.transform.translation.z = 0.0
-        q = tf_transformations.quaternion_from_euler(0.0, 0.0, pose[2])
+        q = tf_transformations.quaternion_from_euler(0.0, 0.0, float(self.current_estimate[2]))
         t.transform.rotation.x = q[0]
         t.transform.rotation.y = q[1]
         t.transform.rotation.z = q[2]
@@ -260,10 +259,10 @@ class ParticleFilter(Node):
         pose_list = []
         for i in range(self.particles.shape[0]):
             p = Pose()
-            p.position.x = self.particles[i, 0]
-            p.position.y = self.particles[i, 1]
+            p.position.x = float(self.particles[i, 0])
+            p.position.y = float(self.particles[i, 1])
             q = tf_transformations.quaternion_about_axis(
-                self.particles[i, 2], [0, 0, 1]
+                float(self.particles[i, 2]), [0, 0, 1]
             )
             p.orientation.x = q[0]
             p.orientation.y = q[1]
@@ -296,7 +295,8 @@ class ParticleFilter(Node):
         ls = LaserScan()
         ls.header.stamp = self.get_clock().now().to_msg()
         ls.header.frame_id = "laser"
-        ls.ranges = fake_scan
+        self.get_logger().info(f"laser shape {fake_scan.shape}")
+        ls.ranges = np.array(fake_scan, dtype=float)
         ls.range_max = self.max_range
         ls.range_min = 0.0
         ls.angle_min = self.theta_min
@@ -315,7 +315,7 @@ class ParticleFilter(Node):
         self.height = map_info.height
         self.width = map_info.width
         self.resolution = map_info.resolution
-        self.max_range_px = self.max_range / self.resolution
+        self.max_range_px = int(self.max_range / self.resolution)
         self.orig_x = map_info.origin.position.x
         self.orig_y = map_info.origin.position.y
         q = map_info.origin.orientation
@@ -326,7 +326,6 @@ class ParticleFilter(Node):
         # TODO: might need to flip here?
         self.dt = self.resolution * distance_transform_edt(omap)
 
-        self.map_initialized = True
         self.get_logger().info("Map initialized.")
 
     def precompute_sensor_model(self):
@@ -359,6 +358,8 @@ class ParticleFilter(Node):
         )
 
     def mcl_update(self):
+        if self.action is None:
+            return
         self.get_logger().info("MCL Updating")
         # mcl updates
         self.particles, self.weights, self.current_estimate, self.rng = mcl_update(

@@ -13,9 +13,9 @@ particle_filter:
     # ray marching
     theta_discretization: 112
     # ray marching stopping threshold
-    eps: 0.001
+    eps: 0.01
     # range data filtering
-    max_range: 10
+    max_range: 10.0
     # sensor model constants
     z_short: 0.01
     z_max: 0.07
