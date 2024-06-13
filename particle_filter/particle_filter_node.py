@@ -51,18 +51,16 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jax.typing import ArrayLike
 from scipy.ndimage import distance_transform_edt
 
 # jax PF
 from jax_pf.mcl import (
     compute_sensor_model,
-    motion_update,
-    sensor_update,
     mcl_init,
     mcl_init_with_pose,
     mcl_update,
 )
+from jax_pf.ray_marching import get_scan
 
 
 class ParticleFilter(Node):
@@ -71,7 +69,6 @@ class ParticleFilter(Node):
 
         # declare pararmeters
         self.declare_parameter("seed")
-        self.declare_parameter("lwb")
         self.declare_parameter("scan_topic")
         self.declare_parameter("odometry_topic")
         self.declare_parameter("update_on_scan")
@@ -91,7 +88,6 @@ class ParticleFilter(Node):
         self.declare_parameter("motion_dispersion_theta")
         # get parameters
         self.seed = self.get_parameter("seed").value
-        self.lwb = self.get_parameter("lwb").value
         self.scan_topic = self.get_parameter("scan_topic").value
         self.odometry_topic = self.get_parameter("odometry_topic").value
         self.update_on_scan = self.get_parameter("update_on_scan").value
@@ -135,6 +131,7 @@ class ParticleFilter(Node):
         self.sensor_model_table = None
         self.particles = None
         self.weights = None
+        self.current_estimate = None
         self.downsampled_scan = None
         self.downsampled_theta = None
         self.last_pose = None
@@ -172,32 +169,32 @@ class ParticleFilter(Node):
             # first call
             self.get_logger().info("Received first LaserScan message...")
             scan = msg.ranges
-            self.downsampled_scan = scan[::self.angle_step]
-            theta_min = msg.angle_min
-            theta_max = msg.angle_max
-            angle_increment = msg.angle_increment
-            theta_scan = jnp.linspace(theta_min, theta_max, num=len(scan))
-            self.downsampled_theta = theta_scan[::self.angle_step]
+            self.downsampled_scan = scan[:: self.angle_step]
+            self.theta_min = msg.angle_min
+            self.theta_max = msg.angle_max
+            self.fov = self.theta_max - self.theta_min
+            self.angle_increment = msg.angle_increment
+            theta_scan = jnp.linspace(self.theta_min, self.theta_max, num=len(scan))
+            self.downsampled_theta = theta_scan[:: self.angle_step]
 
             self.theta_index_increment = (
-                self.theta_discretization * angle_increment / (2 * jnp.pi)
+                self.theta_discretization * self.angle_increment / (2 * jnp.pi)
             )
-            theta_arr = jnp.linspace(0.0, 2*jnp.pi, num=self.theta_discretization)
+            theta_arr = jnp.linspace(0.0, 2 * jnp.pi, num=self.theta_discretization)
             self.sines = jnp.sin(theta_arr)
             self.cosines = jnp.cos(theta_arr)
             self.num_beams = len(self.downsampled_scan)
         else:
-            self.downsampled_scan = msg.ranges[::self.angle_step]
+            self.downsampled_scan = msg.ranges[:: self.angle_step]
 
         if self.update_on_scan:
             self.mcl_update()
-
 
     def odom_callback(self, msg: Odometry):
         q = msg.pose.pose.orientation
         theta = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
         pose = jnp.array([msg.pose.pose.position.x, msg.pose.pose.position.y, theta])
-        
+
         if self.last_pose is None:
             # first call
             self.get_logger().info("Received first Odometry message...")
@@ -207,9 +204,9 @@ class ParticleFilter(Node):
             rot = tf_transformations.rotation_matrix(-self.last_pose[2], [0, 0, 1])
             delta = jnp.array([pose[:2] - self.last_pose[:2]])[:, None].T
             local_delta = jnp.dot(rot, delta)
-            # TODO: check shape
-            # TODO: set current action
-            self.action = jnp.array([local_delta[0], local_delta[1], theta - self.last_pose[2]])
+            self.action = jnp.array(
+                [local_delta[0], local_delta[1], theta - self.last_pose[2]]
+            )
             self.last_pose = pose
             self.odom_initialized = True
 
@@ -223,8 +220,21 @@ class ParticleFilter(Node):
         pose = jnp.array([p.position.x, p.position.y, theta])
         self.initialize_particles_with_pose(pose)
 
-    def publish_pose_estimate(self, current_estimate: Array):
-        pass
+    def publish_pose_estimate(self):
+        stamp = self.get_clock().now().to_msg()
+        p = PoseStamped()
+        p.header.stamp = stamp
+        p.header.frame_id = "map"
+        p.pose.position.x = self.current_estimate[0]
+        p.pose.position.y = self.current_estimate[1]
+        q = tf_transformations.quaternion_about_axis(
+            self.current_estimate[2], [0, 0, 1]
+        )
+        p.pose.orientation.x = q[0]
+        p.pose.orientation.y = q[1]
+        p.pose.orientation.z = q[2]
+        p.pose.orientation.w = q[3]
+        self.pose_pub.publish(p)
 
     def publish_tf(self, pose: Array):
         stamp = self.get_clock().now().to_msg()
@@ -252,10 +262,47 @@ class ParticleFilter(Node):
             p = Pose()
             p.position.x = self.particles[i, 0]
             p.position.y = self.particles[i, 1]
-            # TODO
+            q = tf_transformations.quaternion_about_axis(
+                self.particles[i, 2], [0, 0, 1]
+            )
+            p.orientation.x = q[0]
+            p.orientation.y = q[1]
+            p.orientation.z = q[2]
+            p.orientation.w = q[3]
+            pose_list.append(p)
+        pa.poses = pose_list
+        self.particles_pub.publish(pa)
 
     def publish_fake_scan(self):
-        pass
+        fake_scan = get_scan(
+            self.current_estimate,
+            self.theta_discretization,
+            self.fov,
+            self.num_beams,
+            self.theta_index_increment,
+            self.sines,
+            self.cosines,
+            self.eps,
+            self.orig_x,
+            self.orig_y,
+            self.orig_c,
+            self.orig_s,
+            self.height,
+            self.width,
+            self.resolution,
+            self.dt,
+            self.max_range,
+        )
+        ls = LaserScan()
+        ls.header.stamp = self.get_clock().now().to_msg()
+        ls.header.frame_id = "laser"
+        ls.ranges = fake_scan
+        ls.range_max = self.max_range
+        ls.range_min = 0.0
+        ls.angle_min = self.theta_min
+        ls.angle_max = self.theta_max
+        ls.angle_increment = self.angle_increment
+        self.fake_scan_pub.publish(ls)
 
     def get_omap(self):
         while not self.map_client.wait_for_service(timeout_sec=1.0):
@@ -280,6 +327,7 @@ class ParticleFilter(Node):
         self.dt = self.resolution * distance_transform_edt(omap)
 
         self.map_initialized = True
+        self.get_logger().info("Map initialized.")
 
     def precompute_sensor_model(self):
         self.sensor_model_table = compute_sensor_model(
@@ -291,12 +339,6 @@ class ParticleFilter(Node):
             self.lambda_short,
             self.max_range_px,
         )
-
-    def motion_update(self, particles: Array, action: Array):
-        pass
-
-    def sensor_update(self, particles: Array, observation: Array):
-        pass
 
     def initialize_particles(self):
         self.particles, self.weights, self.rng = mcl_init(
@@ -312,12 +354,56 @@ class ParticleFilter(Node):
         )
 
     def initialize_particles_with_pose(self, pose: Array):
-        self.particles, self.weights, self.rng = mcl_init(
+        self.particles, self.weights, self.rng = mcl_init_with_pose(
             self.rng, pose, self.num_particles
         )
 
     def mcl_update(self):
-        pass
+        self.get_logger().info("MCL Updating")
+        # mcl updates
+        self.particles, self.weights, self.current_estimate, self.rng = mcl_update(
+            self.rng,
+            self.particles,
+            self.weights,
+            self.action,
+            self.downsampled_scan,
+            self.motion_dispersion_x,
+            self.motion_dispersion_y,
+            self.motion_dispersion_theta,
+            self.sensor_model_table,
+            self.theta_discretization,
+            self.fov,
+            self.num_beams,
+            self.theta_index_increment,
+            self.sines,
+            self.cosines,
+            self.eps,
+            self.orig_x,
+            self.orig_y,
+            self.orig_c,
+            self.orig_s,
+            self.height,
+            self.width,
+            self.resolution,
+            self.dt,
+            self.max_range,
+        )
+
+        # inferred pose and tf
+        self.publish_pose_estimate()
+        self.publish_tf()
+
+        # visualization
+        if (
+            self.fake_scan_pub.get_subscription_count() > 0
+            and self.current_estimate is not None
+        ):
+            self.publish_fake_scan()
+        if (
+            self.particles_pub.get_subscription_count() > 0
+            and self.particles is not None
+        ):
+            self.publish_particles()
 
 
 def main(args=None):

@@ -2,13 +2,11 @@ particle_filter:
   ros__parameters:
     # seeding
     seed: 123
-    # car wheelbase
-    lwb: 0.32
     # topic names
     scan_topic: '/scan'
     odometry_topic: '/odom'
     # if update is called in scan callback
-    update_on_scan: True
+    update_on_scan: False
     # range data downsampling
     angle_step: 18
     num_particles: 4000
