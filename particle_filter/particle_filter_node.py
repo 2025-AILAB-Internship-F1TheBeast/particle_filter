@@ -68,24 +68,24 @@ class ParticleFilter(Node):
         super().__init__("particle_filter")
 
         # declare pararmeters
-        self.declare_parameter("seed")
-        self.declare_parameter("scan_topic")
-        self.declare_parameter("odometry_topic")
-        self.declare_parameter("update_on_scan")
-        self.declare_parameter("angle_step")
-        self.declare_parameter("num_particles")
-        self.declare_parameter("theta_discretization")
-        self.declare_parameter("eps")
-        self.declare_parameter("max_range")
-        self.declare_parameter("z_short")
-        self.declare_parameter("z_max")
-        self.declare_parameter("z_rand")
-        self.declare_parameter("z_hit")
-        self.declare_parameter("sigma_hit")
-        self.declare_parameter("lambda_short")
-        self.declare_parameter("motion_dispersion_x")
-        self.declare_parameter("motion_dispersion_y")
-        self.declare_parameter("motion_dispersion_theta")
+        self.declare_parameter("seed", rclpy.Parameter.Type.INTEGER)
+        self.declare_parameter("scan_topic", rclpy.Parameter.Type.STRING)
+        self.declare_parameter("odometry_topic", rclpy.Parameter.Type.STRING)
+        self.declare_parameter("update_on_scan", rclpy.Parameter.Type.BOOL)
+        self.declare_parameter("angle_step", rclpy.Parameter.Type.INTEGER)
+        self.declare_parameter("num_particles", rclpy.Parameter.Type.INTEGER)
+        self.declare_parameter("theta_discretization", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("eps", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("max_range", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("z_short", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("z_max", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("z_rand", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("z_hit", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("sigma_hit", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("lambda_short", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("motion_dispersion_x", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("motion_dispersion_y", rclpy.Parameter.Type.DOUBLE)
+        self.declare_parameter("motion_dispersion_theta", rclpy.Parameter.Type.DOUBLE)
         # get parameters
         self.seed = self.get_parameter("seed").value
         self.scan_topic = self.get_parameter("scan_topic").value
@@ -318,7 +318,7 @@ class ParticleFilter(Node):
         self.max_range_px = self.max_range / self.resolution
         self.orig_x = map_info.origin.position.x
         self.orig_y = map_info.origin.position.y
-        q = map_info.origin.position.orientation
+        q = map_info.origin.orientation
         self.orig_t = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
         self.orig_c = np.cos(self.orig_t)
         self.orig_s = np.sin(self.orig_t)
