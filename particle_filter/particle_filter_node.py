@@ -169,8 +169,6 @@ class ParticleFilter(Node):
     def lidar_callback(self, msg: LaserScan):
         if self.theta_index_increment is None:
             # first call
-            # TODO: there's a mismatch between scan angles and pose angles
-            # TODO: pose angles 0~2pi, scan angles -pi~pi, leads to negative scan angles not scanned
             self.get_logger().info("Received first LaserScan message...")
             scan = msg.ranges
             self.downsampled_scan = jnp.array(scan[:: self.angle_step])
@@ -178,7 +176,8 @@ class ParticleFilter(Node):
             self.theta_min = msg.angle_min
             self.theta_max = msg.angle_max
             self.fov = self.theta_max - self.theta_min
-            self.angle_increment = msg.angle_increment
+            # self.angle_increment = msg.angle_increment
+            self.angle_increment = self.fov / (self.num_beams - 1)
             theta_scan = jnp.linspace(self.theta_min, self.theta_max, num=len(scan))
             self.downsampled_theta = theta_scan[:: self.angle_step]
             self.theta_index_increment = (
@@ -300,7 +299,7 @@ class ParticleFilter(Node):
         ls = LaserScan()
         ls.header.stamp = self.get_clock().now().to_msg()
         ls.header.frame_id = "laser"
-        ls.range_max = self.max_range
+        ls.range_max = self.max_range + 0.1
         ls.range_min = 0.0
         ls.angle_min = self.theta_min
         ls.angle_max = self.theta_max
