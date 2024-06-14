@@ -35,6 +35,7 @@ import tf_transformations
 # messages
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Float32MultiArray
 from geometry_msgs.msg import (
     Pose,
     PoseArray,
@@ -64,6 +65,7 @@ from jax_pf.mcl import (
 from jax_pf.ray_marching import get_scan
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
 
 class ParticleFilter(Node):
     def __init__(self):
@@ -167,23 +169,24 @@ class ParticleFilter(Node):
     def lidar_callback(self, msg: LaserScan):
         if self.theta_index_increment is None:
             # first call
+            # TODO: there's a mismatch between scan angles and pose angles
+            # TODO: pose angles 0~2pi, scan angles -pi~pi, leads to negative scan angles not scanned
             self.get_logger().info("Received first LaserScan message...")
             scan = msg.ranges
             self.downsampled_scan = jnp.array(scan[:: self.angle_step])
+            self.num_beams = len(self.downsampled_scan)
             self.theta_min = msg.angle_min
             self.theta_max = msg.angle_max
             self.fov = self.theta_max - self.theta_min
             self.angle_increment = msg.angle_increment
             theta_scan = jnp.linspace(self.theta_min, self.theta_max, num=len(scan))
             self.downsampled_theta = theta_scan[:: self.angle_step]
-
             self.theta_index_increment = (
                 self.theta_discretization * self.angle_increment / (2 * jnp.pi)
             )
             theta_arr = jnp.linspace(0.0, 2 * jnp.pi, num=self.theta_discretization)
             self.sines = jnp.sin(theta_arr)
             self.cosines = jnp.cos(theta_arr)
-            self.num_beams = len(self.downsampled_scan)
         else:
             self.downsampled_scan = jnp.array(msg.ranges[:: self.angle_step])
 
@@ -244,7 +247,9 @@ class ParticleFilter(Node):
         t.transform.translation.x = float(self.current_estimate[0])
         t.transform.translation.y = float(self.current_estimate[1])
         t.transform.translation.z = 0.0
-        q = tf_transformations.quaternion_from_euler(0.0, 0.0, float(self.current_estimate[2]))
+        q = tf_transformations.quaternion_from_euler(
+            0.0, 0.0, float(self.current_estimate[2])
+        )
         t.transform.rotation.x = q[0]
         t.transform.rotation.y = q[1]
         t.transform.rotation.z = q[2]
@@ -295,17 +300,16 @@ class ParticleFilter(Node):
         ls = LaserScan()
         ls.header.stamp = self.get_clock().now().to_msg()
         ls.header.frame_id = "laser"
-        self.get_logger().info(f"laser shape {fake_scan.shape}")
-        ls.ranges = np.array(fake_scan, dtype=float)
         ls.range_max = self.max_range
         ls.range_min = 0.0
         ls.angle_min = self.theta_min
         ls.angle_max = self.theta_max
         ls.angle_increment = self.angle_increment
+        ls.ranges = list(np.array(fake_scan, dtype=float))
         self.fake_scan_pub.publish(ls)
 
     def get_omap(self):
-        while not self.map_client.wait_for_service(timeout_sec=1.0):
+        while not self.map_client.wait_for_service(timeout_sec=3.0):
             self.get_logger().info("Get map service not available, waiting...")
         req = GetMap.Request()
         future = self.map_client.call_async(req)
@@ -323,6 +327,9 @@ class ParticleFilter(Node):
         self.orig_c = np.cos(self.orig_t)
         self.orig_s = np.sin(self.orig_t)
         omap = np.array(map_msg.data).reshape((self.height, self.width))
+        omap[omap < 10] = 255
+        omap[omap >= 10] = 0
+        # omap = np.fliplr(omap)
         # TODO: might need to flip here?
         self.dt = self.resolution * distance_transform_edt(omap)
 
@@ -388,6 +395,10 @@ class ParticleFilter(Node):
             self.resolution,
             self.dt,
             self.max_range,
+        )
+
+        self.get_logger().info(
+            f"angle min {self.theta_min}, angle max {self.theta_max}, angle inc {self.angle_increment}"
         )
 
         # inferred pose and tf
