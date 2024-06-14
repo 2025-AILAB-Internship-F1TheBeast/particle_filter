@@ -397,10 +397,6 @@ class ParticleFilter(Node):
             self.max_range,
         )
 
-        self.get_logger().info(
-            f"angle min {self.theta_min}, angle max {self.theta_max}, angle inc {self.angle_increment}"
-        )
-
         # inferred pose and tf
         self.publish_pose_estimate()
         self.publish_tf()
