@@ -4,14 +4,14 @@ particle_filter:
     seed: 123
     # topic names
     scan_topic: '/scan'
-    odometry_topic: '/ego_racecar/odom'
+    odometry_topic: '/odom'
     # if update is called in scan callback
     update_on_scan: False
     # range data downsampling
     angle_step: 18
     num_particles: 4000
     # ray marching
-    theta_discretization: 2000
+    theta_discretization: 200
     # ray marching stopping threshold
     eps: 0.01
     # range data filtering

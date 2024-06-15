@@ -6,15 +6,16 @@ This ROS2 node wraps around [jax_pf](https://github.com/hzheng40/jax_pf) for fas
 
 # Installation
 
-ROS 2 dependencies:
+1. Clone repo into workspace src directory.
+2. Install ROS 2 dependencies:
 ```
 rosdep update
 rosdep install -r --from-paths src -y
 ```
 
-JAX-based ray marching and MCL [jax_pf](https://github.com/hzheng40/jax_pf):
+3. Install JAX-based ray marching and MCL [jax_pf](https://github.com/hzheng40/jax_pf):
 
-Note that you might need customized installation of JAX. And you might need to modify the pip install to install for the python that ROS2 uses.
+Note that you might need customized installation of JAX depending on the platform. And you might need to modify the pip install to install for the python that ROS2 uses.
 
 ```
 git clone https://github.com/hzheng40/jax_pf
@@ -38,3 +39,7 @@ The following topics are available for visualization:
 - Current pose estimate: ```pf/viz/inferred_pose``` (```PoseStamped```)
 - Current particles: ```pf/viz/particles``` (```PoseArray```)
 - Simulated scan from pose estimate: ```pf/viz/fake_scan``` (```LaserScan```)
+
+
+### Author
+Hongrui (Billy) Zheng
