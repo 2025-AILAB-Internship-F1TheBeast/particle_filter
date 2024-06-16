@@ -152,7 +152,9 @@ class ParticleFilter(Node):
             # first call
             self.get_logger().info("Received first LaserScan message...")
             scan = msg.ranges
-            self.downsampled_scan = jnp.array(scan[:: self.angle_step])
+            self.downsampled_scan = jnp.clip(
+                jnp.array(scan[:: self.angle_step]), a_max=self.max_range
+            )
             self.num_beams = len(self.downsampled_scan)
             self.theta_min = msg.angle_min
             self.theta_max = msg.angle_max
@@ -168,7 +170,9 @@ class ParticleFilter(Node):
             self.sines = jnp.sin(theta_arr)
             self.cosines = jnp.cos(theta_arr)
         else:
-            self.downsampled_scan = jnp.array(msg.ranges[:: self.angle_step])
+            self.downsampled_scan = jnp.clip(
+                jnp.array(msg.ranges[:: self.angle_step]), a_max=self.max_range
+            )
 
         if self.update_on_scan:
             self.mcl_update()
