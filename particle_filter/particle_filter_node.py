@@ -145,7 +145,17 @@ class ParticleFilter(Node):
             PoseWithCovarianceStamped, "/initialpose", self.clicked_pose_callback, 1
         )
 
+        # timer
+        self.timer = self.create_timer(0.001, self.timer_callback)
+
         self.get_logger().info("Finished initialization, waiting on messages...")
+
+    def timer_callback(self):
+        if self.odom_updated:
+            self.mcl_update()
+            self.odom_updated = False
+        else:
+            self.action = jnp.zeros_like(self.action)
 
     def lidar_callback(self, msg: LaserScan):
         if self.theta_index_increment is None:
@@ -174,8 +184,8 @@ class ParticleFilter(Node):
                 jnp.array(msg.ranges[:: self.angle_step]), a_max=self.max_range
             )
 
-        if self.update_on_scan:
-            self.mcl_update()
+        # if self.update_on_scan:
+        #     self.mcl_update()
 
     def odom_callback(self, msg: Odometry):
         q = msg.pose.pose.orientation
@@ -195,9 +205,10 @@ class ParticleFilter(Node):
                 [local_delta[0][0], local_delta[1][0], theta - self.last_pose[2]]
             )
             self.last_pose = pose
+        self.odom_updated = True
 
-        if not self.update_on_scan:
-            self.mcl_update()
+        # if not self.update_on_scan:
+        #     self.mcl_update()
 
     def clicked_pose_callback(self, msg: PoseWithCovarianceStamped):
         p = msg.pose.pose
