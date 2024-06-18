@@ -32,7 +32,6 @@ from nav_msgs.srv import GetMap
 import os
 import numpy as np
 import jax
-import jax.numpy as jnp
 from jax import Array
 from scipy.ndimage import distance_transform_edt
 
@@ -46,6 +45,7 @@ from jax_pf.mcl import (
 from jax_pf.ray_marching import get_scan
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 
 class ParticleFilter(Node):
@@ -117,6 +117,7 @@ class ParticleFilter(Node):
         self.downsampled_scan = None
         self.downsampled_theta = None
         self.last_pose = None
+        self.odom_updated = False
         self.action = None
 
         # get occupancy map
@@ -154,16 +155,16 @@ class ParticleFilter(Node):
         if self.odom_updated:
             self.mcl_update()
             self.odom_updated = False
-        else:
-            self.action = jnp.zeros_like(self.action)
+        elif self.action is not None:
+            self.action = np.zeros_like(self.action)
 
     def lidar_callback(self, msg: LaserScan):
         if self.theta_index_increment is None:
             # first call
             self.get_logger().info("Received first LaserScan message...")
             scan = msg.ranges
-            self.downsampled_scan = jnp.clip(
-                jnp.array(scan[:: self.angle_step]), a_max=self.max_range
+            self.downsampled_scan = np.clip(
+                np.array(scan[:: self.angle_step]), a_min=0.0, a_max=self.max_range
             )
             self.num_beams = len(self.downsampled_scan)
             self.theta_min = msg.angle_min
@@ -171,26 +172,25 @@ class ParticleFilter(Node):
             self.fov = self.theta_max - self.theta_min
             # self.angle_increment = msg.angle_increment
             self.angle_increment = self.fov / (self.num_beams - 1)
-            theta_scan = jnp.linspace(self.theta_min, self.theta_max, num=len(scan))
+            theta_scan = np.linspace(self.theta_min, self.theta_max, num=len(scan))
             self.downsampled_theta = theta_scan[:: self.angle_step]
             self.theta_index_increment = (
-                self.theta_discretization * self.angle_increment / (2 * jnp.pi)
+                self.theta_discretization * self.angle_increment / (2 * np.pi)
             )
-            theta_arr = jnp.linspace(0.0, 2 * jnp.pi, num=self.theta_discretization)
-            self.sines = jnp.sin(theta_arr)
-            self.cosines = jnp.cos(theta_arr)
+            theta_arr = np.linspace(0.0, 2 * np.pi, num=self.theta_discretization)
+            self.sines = np.sin(theta_arr)
+            self.cosines = np.cos(theta_arr)
         else:
-            self.downsampled_scan = jnp.clip(
-                jnp.array(msg.ranges[:: self.angle_step]), a_max=self.max_range
+            self.downsampled_scan = np.clip(
+                np.array(msg.ranges[:: self.angle_step]),
+                a_min=0.0,
+                a_max=self.max_range,
             )
-
-        # if self.update_on_scan:
-        #     self.mcl_update()
 
     def odom_callback(self, msg: Odometry):
         q = msg.pose.pose.orientation
         theta = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
-        pose = jnp.array([msg.pose.pose.position.x, msg.pose.pose.position.y, theta])
+        pose = np.array([msg.pose.pose.position.x, msg.pose.pose.position.y, theta])
 
         if self.last_pose is None:
             # first call
@@ -199,22 +199,19 @@ class ParticleFilter(Node):
         else:
             # calculate changes in states
             rot = tf_transformations.rotation_matrix(-self.last_pose[2], [0, 0, 1])
-            delta = jnp.array([pose[:2] - self.last_pose[:2]]).T
-            local_delta = jnp.dot(rot[:2, :2], delta)
-            self.action = jnp.array(
+            delta = np.array([pose[:2] - self.last_pose[:2]]).T
+            local_delta = np.dot(rot[:2, :2], delta)
+            self.action = np.array(
                 [local_delta[0][0], local_delta[1][0], theta - self.last_pose[2]]
             )
             self.last_pose = pose
         self.odom_updated = True
 
-        # if not self.update_on_scan:
-        #     self.mcl_update()
-
     def clicked_pose_callback(self, msg: PoseWithCovarianceStamped):
         p = msg.pose.pose
         q = p.orientation
         theta = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
-        pose = jnp.array([p.position.x, p.position.y, theta])
+        pose = np.array([p.position.x, p.position.y, theta])
         self.initialize_particles_with_pose(pose)
 
     def publish_pose_estimate(self):
