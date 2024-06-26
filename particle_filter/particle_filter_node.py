@@ -157,6 +157,7 @@ class ParticleFilter(Node):
             self.odom_updated = False
         elif self.action is not None:
             self.action = np.zeros_like(self.action)
+            self.mcl_update()
 
     def lidar_callback(self, msg: LaserScan):
         if self.theta_index_increment is None:
