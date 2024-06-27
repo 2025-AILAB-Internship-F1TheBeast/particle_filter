@@ -322,6 +322,7 @@ class ParticleFilter(Node):
         omap[omap < 10] = 255
         omap[omap >= 10] = 0
         self.dt = self.resolution * distance_transform_edt(omap)
+        self.dt = jax.device_put(self.dt, jax.devices()[0])
 
         self.get_logger().info("Map initialized.")
 
@@ -335,6 +336,7 @@ class ParticleFilter(Node):
             self.lambda_short,
             self.max_range_px,
         )
+        self.sensor_model_table = jax.device_put(self.sensor_model_table, jax.devices()[0])
 
     def initialize_particles(self):
         self.particles, self.weights, self.rng = mcl_init(
