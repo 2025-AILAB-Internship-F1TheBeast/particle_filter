@@ -115,7 +115,6 @@ class ParticleFilter(Node):
         self.weights = None
         self.current_estimate = None
         self.downsampled_scan = None
-        self.downsampled_theta = None
         self.last_pose = None
         self.odom_updated = False
         self.action = None
@@ -173,14 +172,14 @@ class ParticleFilter(Node):
             self.fov = self.theta_max - self.theta_min
             # self.angle_increment = msg.angle_increment
             self.angle_increment = self.fov / (self.num_beams - 1)
-            theta_scan = np.linspace(self.theta_min, self.theta_max, num=len(scan))
-            self.downsampled_theta = theta_scan[:: self.angle_step]
             self.theta_index_increment = (
                 self.theta_discretization * self.angle_increment / (2 * np.pi)
             )
             theta_arr = np.linspace(0.0, 2 * np.pi, num=self.theta_discretization)
             self.sines = np.sin(theta_arr)
             self.cosines = np.cos(theta_arr)
+            self.sines = jax.device_put(self.sines, jax.devices()[0])
+            self.cosines = jax.device_put(self.cosines, jax.devices()[0])
         else:
             self.downsampled_scan = np.clip(
                 np.array(msg.ranges[:: self.angle_step]),
